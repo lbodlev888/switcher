@@ -1,40 +1,27 @@
-package main
+package server
 
 import (
 	"context"
-	"flag"
-	"fmt"
 	"log"
 	"net"
-	"os"
-	"os/signal"
 	"sync"
-	"time"
 
-	"github.com/hashicorp/yamux"
 	"github.com/lbodlev888/switcher/network"
 )
 
 var (
-	bindAddr = flag.String("listen", ":3001", "The bind address to listen at")
-	templateAddr = flag.String("netaddr", "192.168.100.", "Template address that will be joined with input from control stream")
-	remotePort = flag.String("rport", "554", "Remote port to connect to template address")
 	wg sync.WaitGroup
 )
 
-func main() {
-	flag.Parse()
-
-	listener, err := net.Listen("tcp", *bindAddr)
+func RunServer(ctx context.Context, bindAddr string) {
+	listener, err := net.Listen("tcp", bindAddr)
 	if err != nil {
 		log.Println("Could not bind address: " + err.Error())
+		return
 	}
 	defer listener.Close()
 
-	log.Println("Server running on: " + *bindAddr)
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
+	log.Println("Server running on: " + bindAddr)
 
 	wg.Go(func() {
 		<-ctx.Done()
@@ -63,66 +50,43 @@ func acceptClients(ctx context.Context, l net.Listener) {
 }
 
 func handleClient(ctx context.Context, conn net.Conn) {
-	session, err := yamux.Server(conn, yamux.DefaultConfig())
-	if err != nil {
-		log.Println("Failed to start mux session: " + err.Error())
-		return
-	}
-	defer session.Close()
-
-	wg.Go(func() {
-		<-ctx.Done()
-		session.Close()
-	})
-
-	controlStream, err := session.Accept()
-	if err != nil {
-		log.Println("Failed to open control stream: " + err.Error())
-		return
-	}
-	defer controlStream.Close()
-
-	for {
-		if ctx.Err() != nil {
-			return
-		}
-
-		id, err := network.ReadData(controlStream)
-		if err != nil {
-			log.Println("Failed to read data: " + err.Error())
-			return
-		}
-		finalAddr := fmt.Sprintf("%s%s:%s", *templateAddr, string(id), *remotePort)
-		wg.Go(func() { startStream(ctx, session, controlStream, finalAddr) })
-	}
-}
-
-func startStream(ctx context.Context, session *yamux.Session, ctrlStream net.Conn, addr string) {
-	log.Println("Attempting to connect to " + addr)
-	conn, err := net.DialTimeout("tcp", addr, 5 * time.Second)
-	if err != nil {
-		log.Printf("Could not connect to %s: %s\n", addr, err)
-		network.SendData(ctrlStream, []byte(err.Error()))
-		return
-	}
 	defer conn.Close()
-	network.SendData(ctrlStream, []byte("ok"))
-	log.Println("Connection successfully")
-
-	dataStream, err := session.Accept()
+	dstBuf := make([]byte, 6)
+	n, err := conn.Read(dstBuf)
 	if err != nil {
-		log.Println("Failed to init a new data stream: " + err.Error())
+		log.Println("handleClient: failed to read destination address: " + err.Error())
+		conn.Write([]byte{0x00})
 		return
 	}
-	defer dataStream.Close()
+	if n != 6 {
+		log.Printf("Invalid destination address packet length: required 6 got %d\n", n)
+		conn.Write([]byte{0x00})
+		return
+	}
+
+	dstAddr, err := network.DecodeDestination(dstBuf)
+	if err != nil {
+		log.Println("handleClient: failed to decode destination: " + err.Error())
+		conn.Write([]byte{0x00})
+		return
+	}
+
+	remoteConn, err := net.Dial("tcp", dstAddr)
+	if err != nil {
+		log.Printf("handleClient: Failed to dial %s: %s", dstAddr, err.Error())
+		conn.Write([]byte{0x00})
+		return
+	}
+	defer remoteConn.Close()
+	conn.Write([]byte{0x01})
 
 	wg.Go(func() {
 		<-ctx.Done()
 		conn.Close()
-		dataStream.Close()
+		remoteConn.Close()
 	})
 
-	log.Println("Relay started")
-	network.Relay(conn, dataStream)
-	log.Println("Relay ended")
+	log.Printf("Relay from %s to %s started\n", conn.RemoteAddr().String(), dstAddr)
+	network.Relay(conn, remoteConn)
+	log.Printf("Relay from %s to %s ended\n", conn.RemoteAddr().String(), dstAddr)
 }
