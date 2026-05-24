@@ -55,26 +55,26 @@ func handleClient(ctx context.Context, conn net.Conn) {
 	n, err := conn.Read(dstBuf)
 	if err != nil {
 		log.Println("handleClient: failed to read destination address: " + err.Error())
-		conn.Write([]byte{0x00})
+		conn.Write([]byte{0x02})
 		return
 	}
 	if n != 6 {
 		log.Printf("Invalid destination address packet length: required 6 got %d\n", n)
-		conn.Write([]byte{0x00})
+		conn.Write([]byte{0x03})
 		return
 	}
 
 	dstAddr, err := network.DecodeDestination(dstBuf)
 	if err != nil {
-		log.Println("handleClient: failed to decode destination: " + err.Error())
-		conn.Write([]byte{0x00})
+		log.Println("handleClient: failed to decode destination address: " + err.Error())
+		conn.Write([]byte{0x04})
 		return
 	}
 
 	remoteConn, err := net.Dial("tcp", dstAddr)
 	if err != nil {
 		log.Printf("handleClient: Failed to dial %s: %s", dstAddr, err.Error())
-		conn.Write([]byte{0x00})
+		conn.Write([]byte{0x05})
 		return
 	}
 	defer remoteConn.Close()

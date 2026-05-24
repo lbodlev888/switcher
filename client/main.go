@@ -53,7 +53,16 @@ func RunClient(ctx context.Context, dstAddr, serverAddr string) {
 	}
 
 	if buf[0] != 0x01 {
-		log.Printf("switch server failed to open connection with remote host: status code: %x\n", buf)
+		switch buf[0] {
+		case 0x02:
+			log.Println("server could not read destination address")
+		case 0x03:
+			log.Println("server received an invalid destination address packet")
+		case 0x04:
+			log.Println("server could not decode destination address")
+		case 0x05:
+			log.Println("server could not dial destination address")
+		}
 		return
 	}
 
